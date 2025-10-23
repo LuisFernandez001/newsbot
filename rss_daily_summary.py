@@ -597,43 +597,45 @@ def send_email_html(to_list, subject, html_body):
         safe_body = make_email_safe_fragment(html_body)
 
         email_template = f"""\
-    <!DOCTYPE html>
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>{html.escape(subject)}</title>
-      </head>
-      <body style="margin:0;padding:0;background-color:#ffffff;">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#ffffff;">
-          <tr>
-            <td align="center" style="padding:30px 0;">
-              <table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0"
-                     style="background-color:#ffffff;border:1px solid #e5e7eb;border-radius:8px;
-                            font-family:Arial,Helvetica,sans-serif;color:#333333;">
-                <tr>
-                  <td style="padding:25px 30px 15px 30px;text-align:center;">
-                    <h1 style="margin:0;font-size:22px;color:#1f2937;">Healthcare & Life Sciences Weekly Summary</h1>
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:10px 30px 25px 30px;font-size:14px;line-height:1.6;color:#111827;">
-                    {safe_body}
-                  </td>
-                </tr>
-                <tr>
-                  <td style="padding:20px 30px;text-align:center;font-size:12px;line-height:1.5;
-                             color:#6b7280;border-top:1px solid #e5e7eb;">
-                    You are receiving this because you subscribed to the HCLS Weekly Digest.<br>
-                    <a href="{unsubscribe_link}" style="color:#2563eb;text-decoration:none;">Unsubscribe</a>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-        </table>
-      </body>
-    </html>
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>{html.escape(subject)}</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#ffffff;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#ffffff;">
+      <tr>
+        <td align="center" style="padding:40px 0;">
+          <!-- Inner table -->
+          <table role="presentation" width="90%" cellspacing="0" cellpadding="0" border="0"
+                 style="max-width:900px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:10px;
+                        font-family:Arial,Helvetica,sans-serif;color:#333333;">
+            <tr>
+              <td style="padding:30px 40px 15px 40px;text-align:center;">
+                <h1 style="margin:0;font-size:26px;color:#1f2937;">Healthcare & Life Sciences Weekly Summary</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 40px 40px 40px;font-size:15px;line-height:1.7;color:#111827;">
+                {safe_body}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:25px 40px;text-align:center;font-size:13px;line-height:1.5;
+                         color:#6b7280;border-top:1px solid #e5e7eb;">
+                You are receiving this because you subscribed to the HCLS Weekly Digest.<br>
+                <a href="{unsubscribe_link}" style="color:#2563eb;text-decoration:none;">Unsubscribe</a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
 """
+
 
         msg = MIMEMultipart("alternative")
         msg["From"] = EMAIL_FROM
