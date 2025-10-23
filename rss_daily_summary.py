@@ -20,7 +20,7 @@ import urllib.parse
 # ---------------- CONFIG ----------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-RSS_URL = os.getenv("RSS_URL","https://www.fiercehealthcare.com/rss/xml")                       # e.g. https://example.com/rss.xml
+RSS_URL = os.getenv("RSS_URL","https://www.fiercehealthcare.com/rss/xml")# e.g. https://example.com/rss.xml
 SITE_NAME = os.getenv("SITE_NAME", "Healthcare & Life Sciences")
 
 # Web URLs
@@ -181,6 +181,7 @@ def wrap_html(content_fragment, start_date, end_date):
 <head>
 <meta charset="utf-8">
 <title>HCLS — Weekly Summary ({html.escape(period)})</title>
+<p style="font-size:14px;color:#555;">Your curated Healthcare & Life Sciences insights for the week.</p>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body {{ margin:0; padding:2rem; background:#0b0f1a; color:#e5e7eb;
