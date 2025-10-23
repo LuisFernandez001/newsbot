@@ -1,0 +1,21 @@
+# Python cache & temp files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Virtual environment
+venv/
+
+# Output and generated files
+out/
+output/
+*.html
+run.log
+
+# Secrets
+.env
+
+# System files
+.DS_Store
