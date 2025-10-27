@@ -17,6 +17,14 @@ from bs4 import BeautifulSoup
 import hmac, hashlib
 import urllib.parse
 
+dotenv_path = pathlib.Path("/opt/newsbot/.env")
+if dotenv_path.exists():
+    for line in dotenv_path.read_text().splitlines():
+        if not line.strip() or line.strip().startswith("#"): 
+            continue
+        k, _, v = line.partition("=")
+        os.environ.setdefault(k.strip(), v.strip())
+
 # ---------------- CONFIG ----------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
@@ -699,35 +707,39 @@ def send_weekly_email_if_monday(weekly_path: Path, period: str):
         personalized = add_unsubscribe_footer(html_body, addr)
         send_email_html([addr], f"HCLS — Weekly Summary ({period})", personalized)
 
-def test_send_email():
+def test_send_email(target_email: str | None = None):
     """
-    Send the latest weekly digest immediately to all current subscribers.
-    Useful for testing email configuration and formatting.
+    Send the latest weekly digest immediately.
+    - Default recipient: lfernand@akamai.com
+    - Optional: python rss_hcls_weekly.py send-test [email]
     """
-    subs = ensure_subscribers()
-    if not subs:
-        print("No subscribers found. Please subscribe first.")
-        return
+    # Determine recipient(s)
+    if target_email:
+        subs = [target_email]
+        print(f"📧 Using provided test email target: {target_email}")
+    else:
+        subs = ["lfernand@akamai.com"]
+        print("📧 Using default test email target: lfernand@akamai.com")
 
     weekly_files = sorted(OUT_DIR.glob("weekly-*.html"))
     if not weekly_files:
-        print("No weekly digest files found. Run 'python rss_hcls_weekly.py weekly' first.")
+        print("❌ No weekly digest files found. Run 'python rss_hcls_weekly.py weekly' first.")
         return
 
     latest = weekly_files[-1]
     html_body = latest.read_text(encoding="utf-8")
 
-    # ✅ Define 'period' based on the filename or current date
-    # Example: weekly-2025-10-07.html → "Week ending 2025-10-07"
+    # ✅ Extract period from filename or fallback to current date
     m = re.search(r"weekly-(\d{4}-\d{2}-\d{2})\.html", latest.name)
     period = f"Week ending {m.group(1)}" if m else dt.datetime.now(CR_TZ).strftime("Week ending %Y-%m-%d")
 
-    print(f"Sending test digest '{latest.name}' ({period}) to {len(subs)} subscriber(s)...")
+    print(f"🚀 Sending test digest '{latest.name}' ({period}) to {len(subs)} recipient(s)...")
 
-    # Send to all subscribers (each gets personalized unsubscribe link)
+    # Send
     send_email_html(subs, f"🔧 Test HCLS Weekly Email ({period})", html_body)
 
     print("✅ Test email(s) sent successfully.")
+
 
 
 # ---------------- MAIN ----------------
