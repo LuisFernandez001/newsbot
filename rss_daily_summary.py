@@ -16,6 +16,7 @@ import requests, feedparser
 from bs4 import BeautifulSoup
 import hmac, hashlib
 import urllib.parse
+import pathlib
 
 dotenv_path = pathlib.Path("/opt/newsbot/.env")
 if dotenv_path.exists():
