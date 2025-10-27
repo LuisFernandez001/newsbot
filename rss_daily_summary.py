@@ -1,10 +1,10 @@
 """
-rss_hcls_weekly.py
+rss_daily_summary.py
 HCLS weekly digest builder with subscriptions + Monday email.
 
 USAGE:
-  python rss_hcls_weekly.py daily     # collect up to 10 healthcare-tech items today
-  python rss_hcls_weekly.py weekly    # generate weekly HTML + email subscribers
+  python rss_daily_summary.py daily     # collect up to 10 healthcare-tech items today
+  python rss_daily_summary.py weekly    # generate weekly HTML + email subscribers
 """
 
 import os, re, sys, json, datetime as dt, html, smtplib
@@ -50,12 +50,12 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Email (use Gmail app password or any SMTP)
-SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", "newsbot.digest@gmail.com")           # your SMTP username
-SMTP_PASS = os.getenv("SMTP_PASS", "oazu qckz rlob excz")           # your SMTP password/app password
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT"))
+SMTP_USER = os.getenv("SMTP_USER")           # your SMTP username
+SMTP_PASS = os.getenv("SMTP_PASS")           # your SMTP password/app password
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
-DEFAULT_SUBSCRIBERS = os.getenv("DEFAULT_SUBSCRIBERS", "fernandez.luisdiego@gmail.com")  # per your request
+DEFAULT_SUBSCRIBERS = os.getenv("DEFAULT_SUBSCRIBERS")  # per your request
 
 # ---------------- UTILITIES ----------------
 def today_str():
@@ -712,7 +712,7 @@ def test_send_email(target_email: str | None = None):
     """
     Send the latest weekly digest immediately.
     - Default recipient: lfernand@akamai.com
-    - Optional: python rss_hcls_weekly.py send-test [email]
+    - Optional: python rss_daily_summary.py send-test [email]
     """
     # Determine recipient(s)
     if target_email:
@@ -724,7 +724,7 @@ def test_send_email(target_email: str | None = None):
 
     weekly_files = sorted(OUT_DIR.glob("weekly-*.html"))
     if not weekly_files:
-        print("❌ No weekly digest files found. Run 'python rss_hcls_weekly.py weekly' first.")
+        print("❌ No weekly digest files found. Run 'python rss_daily_summary.py weekly' first.")
         return
 
     latest = weekly_files[-1]
@@ -748,7 +748,7 @@ if __name__ == "__main__":
     if not OPENAI_API_KEY or not RSS_URL:
         sys.exit("Missing OPENAI_API_KEY or RSS_URL.")
     if len(sys.argv) < 2:
-        sys.exit("Usage: python rss_hcls_weekly.py [daily|weekly]")
+        sys.exit("Usage: python rss_daily_summary.py [daily|weekly]")
 
     mode = sys.argv[1].lower()
     if mode == "daily":
