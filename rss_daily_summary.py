@@ -1,10 +1,10 @@
 """
-rss_hcls_weekly.py
+rss_daily_summary.py
 HCLS weekly digest builder with subscriptions + Monday email.
 
 USAGE:
-  python rss_hcls_weekly.py daily     # collect up to 10 healthcare-tech items today
-  python rss_hcls_weekly.py weekly    # generate weekly HTML + email subscribers
+  python rss_daily_summary.py daily     # collect up to 10 healthcare-tech items today
+  python rss_daily_summary.py weekly    # generate weekly HTML + email subscribers
 """
 
 import os, re, sys, json, datetime as dt, html, smtplib
@@ -16,6 +16,7 @@ import requests, feedparser
 from bs4 import BeautifulSoup
 import hmac, hashlib
 import urllib.parse
+import pathlib
 
 dotenv_path = pathlib.Path("/opt/newsbot/.env")
 if dotenv_path.exists():
@@ -189,7 +190,6 @@ def wrap_html(content_fragment, start_date, end_date):
 <head>
 <meta charset="utf-8">
 <title>HCLS — Weekly Summary ({html.escape(period)})</title>
-<p style="font-size:14px;color:#555;">Your curated Healthcare & Life Sciences insights for the week.</p>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   body {{ margin:0; padding:2rem; background:#0b0f1a; color:#e5e7eb;
@@ -711,7 +711,7 @@ def test_send_email(target_email: str | None = None):
     """
     Send the latest weekly digest immediately.
     - Default recipient: lfernand@akamai.com
-    - Optional: python rss_hcls_weekly.py send-test [email]
+    - Optional: python rss_daily_summary.py send-test [email]
     """
     # Determine recipient(s)
     if target_email:
@@ -723,7 +723,7 @@ def test_send_email(target_email: str | None = None):
 
     weekly_files = sorted(OUT_DIR.glob("weekly-*.html"))
     if not weekly_files:
-        print("❌ No weekly digest files found. Run 'python rss_hcls_weekly.py weekly' first.")
+        print("❌ No weekly digest files found. Run 'python rss_daily_summary.py weekly' first.")
         return
 
     latest = weekly_files[-1]
@@ -747,7 +747,7 @@ if __name__ == "__main__":
     if not OPENAI_API_KEY or not RSS_URL:
         sys.exit("Missing OPENAI_API_KEY or RSS_URL.")
     if len(sys.argv) < 2:
-        sys.exit("Usage: python rss_hcls_weekly.py [daily|weekly]")
+        sys.exit("Usage: python rss_daily_summary.py [daily|weekly]")
 
     mode = sys.argv[1].lower()
     if mode == "daily":
