@@ -1,23 +1,23 @@
 """
 rss_daily_summary.py
-HCLS weekly digest builder with subscriptions + Monday email + Admin Dashboard.
+HCLS weekly digest builder with subscriptions + Monday email.
 
 USAGE:
-  python rss_daily_summary.py daily      # collect up to 10 healthcare-tech items today
-  python rss_daily_summary.py weekly     # generate weekly HTML + email subscribers
-  python rss_daily_summary.py send-test [email]   # send test digest
-  python rss_daily_summary.py runserver  # run admin dashboard
+  python rss_daily_summary.py daily     # collect up to 10 healthcare-tech items today
+  python rss_daily_summary.py weekly    # generate weekly HTML + email subscribers
 """
 
-import os, re, sys, json, datetime as dt, html, smtplib, shutil, hmac, hashlib, urllib.parse, pathlib, requests, feedparser
+import os, re, sys, json, datetime as dt, html, smtplib
 from datetime import datetime
 from pathlib import Path
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import requests, feedparser
 from bs4 import BeautifulSoup
-from flask import Flask, request, render_template_string, redirect, url_for, session
+import hmac, hashlib
+import urllib.parse
+import pathlib
 
-# ---------------- LOAD ENV ----------------
 dotenv_path = pathlib.Path("/opt/newsbot/.env")
 if dotenv_path.exists():
     for line in dotenv_path.read_text().splitlines():
@@ -29,31 +29,33 @@ if dotenv_path.exists():
 # ---------------- CONFIG ----------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-RSS_URL = os.getenv("RSS_URL","https://www.fiercehealthcare.com/rss/xml")
+RSS_URL = os.getenv("RSS_URL","https://www.fiercehealthcare.com/rss/xml")# e.g. https://example.com/rss.xml
 SITE_NAME = os.getenv("SITE_NAME", "Healthcare & Life Sciences")
 
-BASE_URL = os.getenv("BASE_URL", "http://newsweeklydigest.duckdns.org")
-NEWS_PATH = "/news"
-API_BASE = os.getenv("API_BASE", "/newsapi")
+# Web URLs
+BASE_URL = os.getenv("BASE_URL", "http://newsweeklydigest.duckdns.org")  # e.g. http://203.0.113.10 or https://news.yourdomain.com
+NEWS_PATH = "/news"                                          # where Nginx serves your HTML
+API_BASE = os.getenv("API_BASE", "/newsapi")                 # Nginx will proxy this to the local API
 
 DATA_DIR = Path("/opt/newsbot/data")
 OUT_DIR = Path("/opt/newsbot/out")
 SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
 
-MAX_ARTICLES = 10
-CR_TZ = dt.timezone(dt.timedelta(hours=-6))
+MAX_ARTICLES = 10                                # limit per day
+CR_TZ = dt.timezone(dt.timedelta(hours=-6))      # Costa Rica
 OPENAI_BASE = "https://api.openai.com/v1"
 
 DATA_FILE = DATA_DIR / "news_log.json"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Email (use Gmail app password or any SMTP)
 SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
+SMTP_PORT = int(os.getenv("SMTP_PORT"))
+SMTP_USER = os.getenv("SMTP_USER")           # your SMTP username
+SMTP_PASS = os.getenv("SMTP_PASS")           # your SMTP password/app password
 EMAIL_FROM = os.getenv("EMAIL_FROM", SMTP_USER)
-DEFAULT_SUBSCRIBERS = os.getenv("DEFAULT_SUBSCRIBERS", "")
+DEFAULT_SUBSCRIBERS = os.getenv("DEFAULT_SUBSCRIBERS")  # per your request
 
 # ---------------- UTILITIES ----------------
 def today_str():
@@ -69,38 +71,18 @@ def save_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ---------------- SUBSCRIBERS ----------------
-def load_subscribers_dict():
-    """Load subscribers as dict with last_sent field (backward compatible)."""
-    if not SUBSCRIBERS_FILE.exists():
-        return {}
-    with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
-        subs = json.load(f)
-    if isinstance(subs, list):
-        subs = {email: {"last_sent": None} for email in subs}
-        save_json(SUBSCRIBERS_FILE, subs)
+def ensure_subscribers():
+    subs = load_json(SUBSCRIBERS_FILE, [])
+    # seed your email if list is empty and DEFAULT_SUBSCRIBERS is set
+    if not subs:
+        seeded = [e.strip() for e in DEFAULT_SUBSCRIBERS.split(",") if e.strip()]
+        if seeded:
+            save_json(SUBSCRIBERS_FILE, seeded)
+            return seeded
     return subs
 
-def save_subscribers_dict(subs):
-    save_json(SUBSCRIBERS_FILE, subs)
-
-def ensure_subscribers():
-    subs = load_subscribers_dict()
-    if not subs and DEFAULT_SUBSCRIBERS:
-        for e in [x.strip() for x in DEFAULT_SUBSCRIBERS.split(",") if x.strip()]:
-            subs[e] = {"last_sent": None}
-        save_subscribers_dict(subs)
-    return list(subs.keys())
-
-def update_last_sent(email):
-    subs = load_subscribers_dict()
-    if email not in subs:
-        subs[email] = {"last_sent": None}
-    subs[email]["last_sent"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    save_subscribers_dict(subs)
-
-# ---------------- OPENAI SUMMARY ----------------
 def openai_summarize(prompt_text):
+    """Send prompt to OpenAI, return complete HTML."""
     headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
     payload = {
         "model": OPENAI_MODEL,
@@ -115,8 +97,10 @@ def openai_summarize(prompt_text):
     r.raise_for_status()
     data = r.json()
     text = data["output"][0]["content"][0]["text"]
+    # Strip accidental markdown fences
     text = re.sub(r"^```(?:html)?", "", text.strip(), flags=re.IGNORECASE)
     text = re.sub(r"```$", "", text).strip()
+    # Repair HTML if needed
     try:
         soup = BeautifulSoup(text, "html.parser")
         text = str(soup)
@@ -124,197 +108,654 @@ def openai_summarize(prompt_text):
         pass
     return text
 
-# ---------------- RSS FETCH ----------------
+# ---------------- DAILY FETCH ----------------
 def fetch_rss_items(rss_url):
     headers = {"User-Agent": "Mozilla/5.0 (Linux; HCLSNewsBot/1.0; +https://example.org)"}
     resp = requests.get(rss_url, headers=headers, timeout=30)
     resp.raise_for_status()
     feed = feedparser.parse(resp.text)
     entries = feed.entries
-    KEYWORDS = ["health","medical","pharma","biotech","life science","hospital","digital health","ai","data","medtech","research","policy"]
-    items = []
+
+    KEYWORDS = [
+        "health", "medical", "pharma", "biotech", "life science", "hospital",
+        "digital health", "telemedicine", "ai", "machine learning", "data",
+        "healthcare", "medtech", "drug", "research", "clinical", "technology"
+    ]
+    filtered = []
     for e in entries:
-        title = e.get("title","").strip()
-        link = e.get("link","")
-        desc = e.get("summary","")
-        snippet = re.sub(r"<[^>]+>"," ",desc)
-        snippet = re.sub(r"\s+"," ",snippet).strip()
-        if any(k in title.lower() or k in desc.lower() for k in KEYWORDS):
-            items.append({"date":today_str(),"title":title,"url":link,"snippet":snippet})
+        title = (e.get("title") or "").lower()
+        summary = (e.get("summary") or e.get("description") or "").lower()
+        if any(k in title or k in summary for k in KEYWORDS):
+            filtered.append(e)
+
+    # build items, then cap at MAX_ARTICLES
+    items = []
+    for e in filtered:
+        title = (e.get("title") or "Untitled").strip()
+        link = e.get("link") or ""
+        desc = e.get("summary") or e.get("description") or ""
+        snippet = re.sub(r"<[^>]+>", " ", desc)
+        snippet = re.sub(r"\s+", " ", snippet).strip()
+        if not title or not link:
+            continue
+        items.append({
+            "date": today_str(),
+            "title": title,
+            "url": link,
+            "snippet": snippet
+        })
     return items[:MAX_ARTICLES]
 
-# ---------------- DAILY & WEEKLY ----------------
-def load_db(): return load_json(DATA_FILE, [])
-def save_db(d): save_json(DATA_FILE, d)
+def load_db():
+    return load_json(DATA_FILE, [])
+
+def save_db(data):
+    save_json(DATA_FILE, data)
 
 def daily_collect():
+    """Collect up to MAX_ARTICLES new healthcare-tech items for today."""
     db = load_db()
+
+    # Prevent duplicate daily runs
     today_entries = [d for d in db if d["date"] == today_str()]
     if len(today_entries) >= MAX_ARTICLES:
-        print("Already collected today.")
+        print(f"Already have {len(today_entries)} entries for today, skipping collection.")
         return
+
     new_items = fetch_rss_items(RSS_URL)
     existing_urls = {d["url"] for d in db}
     added = [i for i in new_items if i["url"] not in existing_urls]
-    if not added:
-        print("No new items.")
-        return
-    db.extend(added)
-    save_db(db)
-    print(f"✅ Added {len(added)} items for {today_str()}.")
 
+    available_slots = MAX_ARTICLES - len(today_entries)
+    if available_slots <= 0:
+        print(f"Already reached {MAX_ARTICLES} articles for today — skipping.")
+        return
+
+    final_to_add = added[:available_slots]
+    if not final_to_add:
+        print("No new healthcare-related items to add today.")
+        return
+
+    db.extend(final_to_add)
+    save_db(db)
+    print(f"✅ Added {len(final_to_add)} new articles for {today_str()} (max {MAX_ARTICLES}).")
+
+# ---------------- HTML ----------------
 def wrap_html(content_fragment, start_date, end_date):
     period = f"{start_date} – {end_date}"
-    return f"""<!doctype html><html><head><meta charset='utf-8'>
+    # Buttons: Download PDF (uses window.print), Subscribe (POST to API)
+    # NOTE: API endpoints proxied by Nginx at {API_BASE}
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <title>HCLS — Weekly Summary ({html.escape(period)})</title>
-<style>body{{font-family:Arial,Helvetica,sans-serif;background:#f9fafb;color:#111827;padding:2rem;}}</style>
-</head><body><h1>HCLS — Weekly Summary ({period})</h1>{content_fragment}</body></html>"""
+<p style="font-size:14px;color:#555;">Your curated Healthcare & Life Sciences insights for the week.</p>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body {{ margin:0; padding:2rem; background:#0b0f1a; color:#e5e7eb;
+          font:15px/1.6 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }}
+  .container {{ max-width:900px; margin:auto; background:#111827;
+               border-radius:18px; padding:2rem; box-shadow:0 10px 24px rgba(0,0,0,.35); }}
+  h1 {{ font-size:1.8rem; margin-bottom:0.5rem; }}
+  h2 {{ color:#60a5fa; margin-top:1.5rem; }}
+  .bar {{ display:flex; gap:.5rem; margin-bottom:1rem; flex-wrap:wrap; }}
+  .btn {{ background:#1f2937; border:1px solid #374151; color:#e5e7eb; padding:.45rem .8rem; border-radius:10px; cursor:pointer; }}
+  .btn:hover {{ background:#374151; }}
+  input[type=email] {{ padding:.45rem .6rem; border-radius:8px; border:1px solid #374151; background:#0b0f1a; color:#e5e7eb; }}
+  .msg {{ color:#9ca3af; margin-left:.5rem; }}
+  a {{ color:#60a5fa; text-decoration:none; }}
+  a:hover {{ text-decoration:underline; }}
+</style>
+</head>
+<body><div class="container">
+  <div class="bar">
+    <button class="btn" onclick="window.print()">Download as PDF</button>
+    <form id="subForm" onsubmit="return subscribe(event)">
+      <input type="email" id="email" placeholder="you@example.com" required>
+      <button class="btn" type="submit">Subscribe for Monday email</button>
+      <span id="msg" class="msg"></span>
+    </form>
+  </div>
 
+  <h1>HCLS — Weekly Summary</h1>
+  <div>Period: {html.escape(period)}</div>
+  <div style="height:1px;background:#222;margin:1rem 0;"></div>
+
+  {content_fragment}
+</div>
+
+<script>
+async function subscribe(e) {{
+  e.preventDefault();
+  const email = document.getElementById('email').value.trim();
+  const msg = document.getElementById('msg');
+  msg.textContent = 'Subscribing...';
+  try {{
+    const res = await fetch('{API_BASE}/subscribe', {{
+      method: 'POST',
+      headers: {{ 'Content-Type': 'application/json' }},
+      body: JSON.stringify({{ email }})
+    }});
+    if (!res.ok) throw new Error('Request failed');
+    const data = await res.json();
+    msg.textContent = data.message || 'Subscribed!';
+  }} catch (err) {{
+    msg.textContent = 'Failed to subscribe.';
+  }}
+}}
+</script>
+</body>
+</html>"""
+
+# ---------------- WEEKLY DIGEST ----------------
 def weekly_digest():
     db = load_db()
-    if not db: return
+    if not db:
+        print("No data found.")
+        return
+
     now = dt.datetime.now(CR_TZ)
     week_ago = now - dt.timedelta(days=7)
-    start_date, end_date = week_ago.strftime("%Y-%m-%d"), now.strftime("%Y-%m-%d")
+    start_date = week_ago.strftime("%Y-%m-%d")
+    end_date = now.strftime("%Y-%m-%d")
+
     week_items = [d for d in db if start_date <= d["date"] <= end_date]
-    if not week_items: return
+    if not week_items:
+        print("No items in last 7 days.")
+        return
+
+    # Sort chronologically
     week_items.sort(key=lambda x: x["date"])
-    summaries = "\n".join(f"{i['date']}: {i['title']} — {i['snippet']} ({i['url']})" for i in week_items)
-    prompt = ("Create a weekly digest for HCLS leaders. Begin with <h2>What matters</h2>..."
-              f"\nArticles:\n{summaries}")
+
+    summaries = "\n".join(
+        f"{i['date']}: {i['title']} — {i['snippet']} (URL: {i['url']})"
+        for i in week_items
+    )
+
+    # Group by category sections (model infers categories)
+    prompt = (
+        "Create a weekly digest for the Healthcare & Life Sciences technology industry. "
+        "Begin with <h2>What matters</h2> and 3–5 paragraphs with strategic takeaways for HCLS leaders. "
+        "Then group the following articles by thematic category (e.g., AI in Healthcare, Telemedicine, "
+        "Pharma & Research, Digital Health, Policy & Regulation). For each category, output an <h2>Category</h2> "
+        "and a <ul> with <li><strong>Title</strong> — one-sentence summary with <a href>source link</a></li>. "
+        "No 'Sources' list. Only HTML.\n\n"
+        f"Articles:\n{summaries}"
+    )
+
     html_fragment = openai_summarize(prompt)
     final_html = wrap_html(html_fragment, start_date, end_date)
+
+    # Create a folder for the month (e.g., /opt/newsbot/out/2025-10/)
     month_dir = OUT_DIR / now.strftime("%Y-%m")
     month_dir.mkdir(parents=True, exist_ok=True)
+
     out_path = month_dir / f"weekly-{end_date}.html"
+
     out_path.write_text(final_html, encoding="utf-8")
-    print(f"✅ Wrote {out_path}")
-    send_weekly_email_if_monday(out_path, f"{start_date} – {end_date}")
+    print(f"Wrote weekly digest: {out_path}")
+
+    # Email subscribers every Monday at 07:00 (CR time) OR always if you prefer.
+    send_weekly_email_if_monday(out_path, period=f"{start_date} – {end_date}")
+
+    # Update index.html to latest
+    set_latest_index()
+    build_archive_index()
+    set_latest_daily()
+
+def set_latest_daily():
+    """Find the newest daily report and update daily.html in OUT_DIR and web root."""
+    files = list(OUT_DIR.rglob("daily-*.html"))
+    if not files:
+        print("No daily files found to link as daily.html.")
+        return
+
+    def extract_dt(path):
+        """Extract date from daily-YYYY-MM-DD.html, fallback to mtime."""
+        m = re.search(r"daily-(\d{4})-(\d{1,2})-(\d{1,2})", path.name)
+        if m:
+            y, mo, d = map(int, m.groups())
+            try:
+                return datetime(y, mo, d)
+            except ValueError:
+                pass
+        return datetime.fromtimestamp(path.stat().st_mtime)
+
+    latest = max(files, key=extract_dt)
+
+    print("Detected daily files (oldest → newest):")
+    for f in sorted(files, key=extract_dt):
+        print(f"  {f} → {extract_dt(f)}")
+    print(f"Chosen latest daily: {latest.name}")
+
+    # Write latest as OUT_DIR/daily.html
+    daily_path = OUT_DIR / "daily.html"
+    daily_path.write_text(latest.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"Updated daily.html → {latest.name}")
+
+    # Copy to Nginx web root
+    try:
+        shutil.copy(str(daily_path), "/var/www/news/daily.html")
+        print("Copied latest daily.html to /var/www/news/")
+    except Exception as e:
+        print(f"Warning: failed to copy daily.html to /var/www/news/: {e}")
+
+def build_daily_log_page():
+    """
+    Generate /opt/newsbot/out/daily.html showing all daily collected articles,
+    grouped by date (newest first).
+    """
+    data_file = DATA_DIR / "news_log.json"
+    if not data_file.exists():
+        print("No news_log.json found; skipping daily page.")
+        return
+
+    try:
+        with open(data_file, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    except Exception as e:
+        print(f"Error loading {data_file}: {e}")
+        return
+
+    if not db:
+        print("No data in news_log.json; skipping daily page.")
+        return
+
+    grouped = {}
+    for item in db:
+        d = item.get("date")
+        grouped.setdefault(d, []).append(item)
+
+    sorted_days = sorted(grouped.keys(), reverse=True)
+    sections = []
+    for d in sorted_days:
+        articles = grouped[d]
+        items_html = ""
+        for a in articles:
+            title = html.escape(a.get("title", "Untitled"))
+            url = a.get("url", "#")
+            summary = html.escape(a.get("summary", ""))
+            category = html.escape(a.get("category", ""))
+            items_html += f"""
+            <div style="margin-bottom:10px;padding:10px;border-bottom:1px solid #e5e7eb;">
+              <a href="{url}" target="_blank" style="font-weight:bold;color:#2563eb;text-decoration:none;">{title}</a><br>
+              <span style="font-size:13px;color:#6b7280;">{category}</span>
+              <p style="margin:6px 0 0 0;color:#111827;font-size:14px;line-height:1.5;">{summary}</p>
+            </div>
+            """
+        section = f"""
+        <section style="margin-bottom:30px;">
+          <h2 style="font-size:18px;color:#1f2937;">{d}</h2>
+          {items_html}
+        </section>
+        """
+        sections.append(section)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HCLS Daily Inputs</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body {{ font-family:Arial,Helvetica,sans-serif; background:#ffffff; color:#111827; padding:2rem; }}
+  h1 {{ font-size:24px; color:#1f2937; margin:0 0 16px 0; }}
+  a:hover {{ text-decoration:underline; }}
+</style>
+</head>
+<body>
+  <h1>Healthcare & Life Sciences — Daily Inputs</h1>
+  {"".join(sections) if sections else "<p>No daily inputs yet.</p>"}
+</body>
+</html>
+"""
+    out_path = OUT_DIR / "daily.html"
+    out_path.write_text(html_content, encoding="utf-8")
+    print(f"✅ Daily log page updated: {out_path}")
+
+def build_archive_index():
+    """
+    Build /opt/newsbot/out/archive.html listing months and weekly reports.
+    Output path (public): http://<ip-or-domain>/news/archive.html
+    """
+    # Collect month folders like YYYY-MM
+    months = sorted(
+        [p for p in OUT_DIR.iterdir() if p.is_dir() and re.match(r"\d{4}-\d{2}$", p.name)],
+        key=lambda p: p.name,
+        reverse=True  # newest month first
+    )
+
+    # Build HTML sections
+    month_sections = []
+    for month_path in months:
+        month_name = month_path.name  # e.g., 2025-10
+
+        # All weekly files inside the month
+        weekly_files = sorted(
+            month_path.glob("weekly-*.html"),
+            key=lambda p: p.name,
+            reverse=True  # newest week first
+        )
+
+        if not weekly_files:
+            continue
+
+        # Per-week links with friendly label "Week ending YYYY-MM-DD"
+        items_html = []
+        for f in weekly_files:
+            m = re.search(r"weekly-(\d{4}-\d{2}-\d{2})\.html", f.name)
+            week_label = f"Week ending {m.group(1)}" if m else f.name
+            # Public URL under /news/
+            url = f"/news/{month_name}/{f.name}"
+            items_html.append(f'<li><a href="{url}" style="color:#2563eb;text-decoration:none;">{week_label}</a></li>')
+
+        section = f"""
+        <section style="margin-bottom:20px;">
+          <h2 style="margin:0 0 8px 0;font-size:18px;color:#1f2937;">{month_name}</h2>
+          <ul style="list-style-type:none;padding-left:0;margin:0;">
+            {''.join(items_html)}
+          </ul>
+        </section>
+        """
+        month_sections.append(section)
+
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>HCLS Weekly Archive</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body {{ font-family:Arial,Helvetica,sans-serif; background:#ffffff; color:#111827; padding:2rem; }}
+  h1 {{ font-size:24px; color:#1f2937; margin:0 0 16px 0; }}
+  a:hover {{ text-decoration:underline; }}
+</style>
+</head>
+<body>
+  <h1>Healthcare & Life Sciences — Weekly Archive</h1>
+  {"".join(month_sections) if month_sections else "<p>No reports yet.</p>"}
+</body>
+</html>
+"""
+    (OUT_DIR / "archive.html").write_text(html_content, encoding="utf-8")
+    print("✅ Archive index updated at /news/archive.html")
+
+
+
+def set_latest_index():
+    # Recursively find all weekly HTML files inside OUT_DIR and subfolders
+    files = list(OUT_DIR.rglob("weekly-*.html"))
+    if not files:
+        print("No weekly files found to link as index.")
+        return
+
+    def extract_dt(path):
+        """Extract date from weekly-YYYY-MM-DD.html or fallback to mtime."""
+        m = re.search(r"weekly-(\d{4})-(\d{1,2})-(\d{1,2})", path.name)
+        if m:
+            y, mo, d = map(int, m.groups())
+            try:
+                return datetime(y, mo, d)
+            except ValueError:
+                pass
+        return datetime.fromtimestamp(path.stat().st_mtime)
+
+    latest = max(files, key=extract_dt)
+
+    # Debug info
+    print("Detected weekly files (oldest → newest):")
+    for f in sorted(files, key=extract_dt):
+        print(f"  {f} → {extract_dt(f)}")
+    print(f"Chosen latest: {latest.name}")
+
+    # Write new index.html
+    index_path = OUT_DIR / "index.html"
+    index_path.write_text(latest.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"Updated index.html → {latest.name}")
+
+    # Copy to web root
+    try:
+        shutil.copy(str(index_path), "/var/www/news/index.html")
+        print("Copied latest index.html to /var/www/news/")
+    except Exception as e:
+        print(f"Warning: failed to copy index.html to /var/www/news/: {e}")
+
 
 # ---------------- EMAIL ----------------
-def make_token(email): 
-    secret = os.getenv("SUB_SECRET","change-me")
+def make_token(email: str) -> str:
+    """
+    Generate a secure HMAC token for an email address.
+    Used for personalized unsubscribe links.
+    """
+    secret = os.getenv("SUB_SECRET", "change-me-please")
     return hmac.new(secret.encode(), email.lower().encode(), hashlib.sha256).hexdigest()
+def make_email_safe_fragment(html_doc: str) -> str:
+    """
+    Extract a clean, email-friendly fragment:
+    - grabs only the main content (.container or <body>)
+    - removes <style>, <script>, .bar (print/subscribe) etc.
+    - strips classes/ids/inline styles that force dark UI
+    - applies minimal inline light styles to headings, links, text
+    """
+    try:
+        soup = BeautifulSoup(html_doc, "html.parser")
+    except Exception:
+        # If parsing fails, return original
+        return html_doc
 
-def make_email_safe_fragment(html_doc):
-    try: soup = BeautifulSoup(html_doc,"html.parser")
-    except: return html_doc
-    for el in soup.select("script,style,.bar,form"): el.decompose()
-    return str(soup.body or soup)
+    # 1) Pick main content
+    root = soup.select_one("div.container") or soup.body or soup
+
+    # 2) Remove scripts, styles, and the top control bar
+    for el in root.select("script, style, .bar, form"):
+        el.decompose()
+
+    # 3) Strip attributes that might force dark theme
+    for tag in root.find_all(True):
+        if tag.name == "a":
+            href = tag.get("href", "")
+            tag.attrs = {}
+            if href:
+                tag["href"] = href
+                tag["style"] = "color:#2563eb;text-decoration:none;"
+        else:
+            tag.attrs = {}
+
+    # 4) Apply minimal inline light styles
+    for h in root.find_all(["h1", "h2", "h3"]):
+        if h.name == "h1":
+            h["style"] = "margin:16px 0 10px 0;font-size:20px;color:#111827;"
+        elif h.name == "h2":
+            h["style"] = "margin:18px 0 10px 0;font-size:16px;color:#111827;"
+        else:
+            h["style"] = "margin:12px 0 8px 0;font-size:15px;color:#111827;"
+
+    for p in root.find_all("p"):
+        p["style"] = "margin:8px 0 12px 0;color:#111827;"
+
+    for li in root.find_all("li"):
+        li["style"] = "margin:6px 0;color:#111827;"
+
+    for ul in root.find_all("ul"):
+        ul["style"] = "padding-left:20px;margin:6px 0 12px 0;"
+
+    # Return only the cleaned inner HTML
+    return "".join(str(c) for c in root.children) or str(root)
 
 def send_email_html(to_list, subject, html_body):
-    if not SMTP_USER or not SMTP_PASS: return
+    """
+    Send styled HTML digest emails that render cleanly in Gmail, Outlook, etc.
+    Each recipient receives a personalized unsubscribe link.
+    Uses a white, minimal design for consistent readability.
+    """
+    if not SMTP_USER or not SMTP_PASS or not EMAIL_FROM:
+        print("SMTP creds not set; skipping email.")
+        return
+    if not to_list:
+        print("No recipients; skipping email.")
+        return
+
     for addr in to_list:
+        # Generate personalized unsubscribe link
         token = make_token(addr)
-        unsubscribe = f"{BASE_URL}/unsubscribe?email={urllib.parse.quote(addr)}&token={token}"
+        query = urllib.parse.urlencode({"email": addr, "token": token})
+        unsubscribe_link = f"{BASE_URL}{API_BASE}/unsubscribe?{query}"
+
+        # 🔧 Sanitize the weekly HTML for email (forces light theme)
         safe_body = make_email_safe_fragment(html_body)
-        email_template = f"""<html><body style='font-family:Arial;background:#fff;'>
-        <table align='center' width='90%' style='max-width:900px;border:1px solid #e5e7eb;padding:20px;'>
-        <tr><td><h2>HCLS Weekly Summary</h2>{safe_body}
-        <hr><p style='font-size:12px;color:#6b7280;text-align:center'>
-        You’re receiving this because you subscribed.<br>
-        <a href='{unsubscribe}' style='color:#2563eb;'>Unsubscribe</a></p></td></tr></table></body></html>"""
+
+        email_template = f"""\
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>{html.escape(subject)}</title>
+  </head>
+  <body style="margin:0;padding:0;background-color:#ffffff;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background-color:#ffffff;">
+      <tr>
+        <td align="center" style="padding:40px 0;">
+          <!-- Inner table -->
+          <table role="presentation" width="90%" cellspacing="0" cellpadding="0" border="0"
+                 style="max-width:900px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:10px;
+                        font-family:Arial,Helvetica,sans-serif;color:#333333;">
+            <tr>
+              <td style="padding:30px 40px 15px 40px;text-align:center;">
+                <h1 style="margin:0;font-size:26px;color:#1f2937;">Healthcare & Life Sciences Weekly Summary</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 40px 40px 40px;font-size:15px;line-height:1.7;color:#111827;">
+                {safe_body}
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:25px 40px;text-align:center;font-size:13px;line-height:1.5;
+                         color:#6b7280;border-top:1px solid #e5e7eb;">
+                You are receiving this because you subscribed to the HCLS Weekly Digest.<br>
+                <a href="{unsubscribe_link}" style="color:#2563eb;text-decoration:none;">Unsubscribe</a>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
         msg = MIMEMultipart("alternative")
-        msg["From"], msg["To"], msg["Subject"] = EMAIL_FROM, addr, subject
-        msg.attach(MIMEText(email_template,"html","utf-8"))
+        msg["From"] = EMAIL_FROM
+        msg["To"] = addr
+        msg["Subject"] = subject
+
+        body = MIMEText(email_template, "html", "utf-8")
+        msg.attach(body)
+
         try:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-                s.starttls(); s.login(SMTP_USER, SMTP_PASS)
-                s.sendmail(EMAIL_FROM,[addr],msg.as_string())
+                s.starttls()
+                s.login(SMTP_USER, SMTP_PASS)
+                s.sendmail(EMAIL_FROM, [addr], msg.as_string())
             print(f"✅ Sent email to {addr}")
-            update_last_sent(addr)
         except Exception as e:
-            print(f"❌ Failed {addr}: {e}")
+            print(f"❌ SMTP send failed for {addr}: {e}")
 
-def send_weekly_email_if_monday(path, period):
-    subs = ensure_subscribers()
-    if not subs: return
-    html_body = path.read_text(encoding="utf-8")
+from urllib.parse import urlencode
+
+def add_unsubscribe_footer(html_body: str, email_addr: str) -> str:
+    """
+    Append a consistent unsubscribe footer to each HTML email.
+    Includes a personalized unsubscribe link for the given address.
+    """
+    token = make_token(email_addr) if 'make_token' in globals() else ""
+    query = urlencode({"email": email_addr, "token": token})
+    unsubscribe_url = f"http://newsweeklydigest.duckdns.org/unsubscribe?{query}"
+
+    footer_html = f"""
+    <hr style="border:none;border-top:1px solid #ddd;margin:30px 0;">
+    <div style="font-size:13px;color:#555;text-align:center;line-height:1.4;">
+      You’re receiving this because you subscribed to the
+      <b>HCLS Weekly Digest</b>.<br>
+      <a href="{unsubscribe_url}"
+         style="color:#2563eb;text-decoration:none;">Unsubscribe</a> anytime.
+    </div>
+    </body></html>
+    """
+    # ensure footer added only once
+    if "</body>" in html_body:
+        html_body = html_body.replace("</body>", footer_html)
+    else:
+        html_body += footer_html
+    return html_body
+def send_weekly_email_if_monday(weekly_path: Path, period: str):
+    now = dt.datetime.now(CR_TZ)
+    # if now.weekday() != 0 or now.hour < 7:  # Monday=0; ensure after 07:00
+    #     # You can comment this out if you want to always send on weekly run
+    #     print("Not Monday 07:00 CR; skipping email send.")
+    #     return
+
+    subs = ensure_subscribers()  # seed your email if empty
+    if not subs:
+        print("No subscribers.")
+        return
+
+    html_body = weekly_path.read_text(encoding="utf-8")
+    # personalize unsubscribe footer per recipient (simple loop)
     for addr in subs:
-        send_email_html([addr], f"HCLS — Weekly Summary ({period})", html_body)
+        personalized = add_unsubscribe_footer(html_body, addr)
+        send_email_html([addr], f"HCLS — Weekly Summary ({period})", personalized)
 
-def test_send_email(target_email=None):
-    subs = [target_email] if target_email else ["lfernand@akamai.com"]
-    weekly_files = sorted(OUT_DIR.rglob("weekly-*.html"))
-    if not weekly_files: 
-        print("No weekly files found."); return
+def test_send_email(target_email: str | None = None):
+    """
+    Send the latest weekly digest immediately.
+    - Default recipient: lfernand@akamai.com
+    - Optional: python rss_daily_summary.py send-test [email]
+    """
+    # Determine recipient(s)
+    if target_email:
+        subs = [target_email]
+        print(f"📧 Using provided test email target: {target_email}")
+    else:
+        subs = ["lfernand@akamai.com"]
+        print("📧 Using default test email target: lfernand@akamai.com")
+
+    weekly_files = sorted(OUT_DIR.glob("weekly-*.html"))
+    if not weekly_files:
+        print("❌ No weekly digest files found. Run 'python rss_daily_summary.py weekly' first.")
+        return
+
     latest = weekly_files[-1]
     html_body = latest.read_text(encoding="utf-8")
-    m = re.search(r"weekly-(\d{4}-\d{2}-\d{2})", latest.name)
-    period = f"Week ending {m.group(1)}" if m else today_str()
-    print(f"🚀 Sending test to {subs}")
+
+    # ✅ Extract period from filename or fallback to current date
+    m = re.search(r"weekly-(\d{4}-\d{2}-\d{2})\.html", latest.name)
+    period = f"Week ending {m.group(1)}" if m else dt.datetime.now(CR_TZ).strftime("Week ending %Y-%m-%d")
+
+    print(f"🚀 Sending test digest '{latest.name}' ({period}) to {len(subs)} recipient(s)...")
+
+    # Send
     send_email_html(subs, f"🔧 Test HCLS Weekly Email ({period})", html_body)
 
-# ---------------- ADMIN DASHBOARD ----------------
-app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET_KEY", "supersecretkey")
-ADMIN_USER = os.getenv("ADMIN_USER")
-ADMIN_PASS = os.getenv("ADMIN_PASS")
+    print("✅ Test email(s) sent successfully.")
 
-@app.route("/admin/", methods=["GET","POST"])
-def admin_page():
-    if "logged_in" not in session:
-        if request.method == "POST":
-            if (request.form.get("username")==ADMIN_USER and request.form.get("password")==ADMIN_PASS):
-                session["logged_in"]=True; return redirect(url_for("admin_page"))
-            return render_template_string(LOGIN_TEMPLATE,error="Invalid credentials")
-        return render_template_string(LOGIN_TEMPLATE)
-    subs = load_subscribers_dict()
-    if request.method=="POST":
-        if "add_email" in request.form:
-            new_email=request.form.get("add_email","").strip().lower()
-            if new_email and new_email not in subs:
-                subs[new_email]={"last_sent":None}; save_subscribers_dict(subs)
-        elif "remove_email" in request.form:
-            subs.pop(request.form.get("remove_email"),None); save_subscribers_dict(subs)
-        return redirect(url_for("admin_page"))
-    q = request.args.get("q","").lower()
-    filtered = {k:v for k,v in subs.items() if q in k.lower()} if q else subs
-    return render_template_string(ADMIN_TEMPLATE, subs=filtered, query=q)
 
-@app.route("/logout")
-def logout(): session.clear(); return redirect(url_for("admin_page"))
-
-LOGIN_TEMPLATE = """
-<html><body style="font-family:sans-serif;max-width:400px;margin:60px auto;">
-<h2>🔒 Admin Login</h2>
-{% if error %}<p style="color:red">{{error}}</p>{% endif %}
-<form method="POST">
-<label>User:</label><input name="username" required><br><br>
-<label>Pass:</label><input type="password" name="password" required><br><br>
-<button type="submit">Login</button>
-</form></body></html>"""
-
-ADMIN_TEMPLATE = """
-<html><body style="font-family:sans-serif;max-width:800px;margin:40px auto;">
-<h2>🧭 Subscriber Management</h2><a href="{{url_for('logout')}}">Logout</a>
-<form method="GET" style="margin-top:10px;">
-<input name="q" value="{{query}}" placeholder="Search email..." style="padding:6px;width:60%;">
-<button type="submit">🔍 Search</button>
-</form>
-<form method="POST" style="margin-top:10px;">
-<input name="add_email" placeholder="Add new subscriber" style="width:60%;padding:6px;">
-<button type="submit">➕ Add</button>
-</form>
-<table border="1" cellpadding="6" cellspacing="0" style="margin-top:20px;border-collapse:collapse;width:100%;">
-<tr style="background:#f3f4f6;"><th>Email</th><th>Last Sent</th><th>Actions</th></tr>
-{% for email,info in subs.items() %}
-<tr><td>{{email}}</td><td>{{info.get('last_sent','–')}}</td>
-<td><form method="POST" style="display:inline;">
-<input type="hidden" name="remove_email" value="{{email}}">
-<button type="submit" style="color:red;">❌ Remove</button></form></td></tr>
-{% endfor %}
-</table></body></html>"""
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
+    if not OPENAI_API_KEY or not RSS_URL:
+        sys.exit("Missing OPENAI_API_KEY or RSS_URL.")
     if len(sys.argv) < 2:
-        print("Usage: python rss_daily_summary.py [daily|weekly|send-test|runserver]"); sys.exit()
-    cmd = sys.argv[1].lower()
-    if cmd=="daily": daily_collect()
-    elif cmd=="weekly": weekly_digest()
-    elif cmd=="send-test":
-        email = sys.argv[2] if len(sys.argv)>2 else None
-        test_send_email(email)
-    elif cmd=="runserver":
-        app.run(host="0.0.0.0", port=5000, debug=False)
+        sys.exit("Usage: python rss_daily_summary.py [daily|weekly]")
+
+    mode = sys.argv[1].lower()
+    if mode == "daily":
+        daily_collect()
+    elif mode == "weekly":
+        weekly_digest()
+    elif mode == "send-test":
+        test_send_email()
+    else:
+        sys.exit("Unknown mode: use 'daily', 'weekly', or 'send-test'.")
