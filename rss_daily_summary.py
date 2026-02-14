@@ -766,7 +766,8 @@ def test_send_email(target_email: Optional[str] = None):
         subs = ["lfernand@akamai.com"]
         print("📧 Using default test email target: lfernand@akamai.com")
 
-    weekly_files = sorted(OUT_DIR.glob("weekly-*.html"))
+    # Use rglob to find files in subdirectories (e.g. 2026-02/weekly-...)
+    weekly_files = sorted(OUT_DIR.rglob("weekly-*.html"))
     if not weekly_files:
         print("❌ No weekly digest files found. Run 'python rss_daily_summary.py weekly' first.")
         return
