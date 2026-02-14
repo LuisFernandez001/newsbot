@@ -767,11 +767,19 @@ def test_send_email(target_email: Optional[str] = None):
         print("📧 Using default test email target: lfernand@akamai.com")
 
     # Use rglob to find files in subdirectories (e.g. 2026-02/weekly-...)
-    weekly_files = sorted(OUT_DIR.rglob("weekly-*.html"))
+    weekly_files = list(OUT_DIR.rglob("weekly-*.html"))
     if not weekly_files:
         print("❌ No weekly digest files found. Run 'python rss_daily_summary.py weekly' first.")
         return
 
+    # Sort by date in filename (weekly-YYYY-MM-DD)
+    def extract_dt(path):
+        m = re.search(r"weekly-(\d{4})-(\d{1,2})-(\d{1,2})", path.name)
+        if m:
+            return m.group(1) + "-" + m.group(2) + "-" + m.group(3)
+        return "0000-00-00"
+
+    weekly_files.sort(key=extract_dt)
     latest = weekly_files[-1]
     html_body = latest.read_text(encoding="utf-8")
 
