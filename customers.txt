@@ -1,5 +1,4 @@
 # Add one customer name per line
-# Example:
 AdventHealth System
 American Lebanese Syrian Associated Charities, Inc.
 Becton, Dickinson and Company

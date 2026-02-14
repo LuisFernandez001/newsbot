@@ -19,6 +19,11 @@ import urllib.parse
 import pathlib
 
 dotenv_path = pathlib.Path("/opt/newsbot/.env")
+local_dotenv = pathlib.Path(".env")
+
+if local_dotenv.exists():
+    dotenv_path = local_dotenv
+
 if dotenv_path.exists():
     for line in dotenv_path.read_text().splitlines():
         if not line.strip() or line.strip().startswith("#"): 
