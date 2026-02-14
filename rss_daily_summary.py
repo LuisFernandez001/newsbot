@@ -37,8 +37,8 @@ BASE_URL = os.getenv("BASE_URL", "http://newsweeklydigest.duckdns.org")  # e.g. 
 NEWS_PATH = "/news"                                          # where Nginx serves your HTML
 API_BASE = os.getenv("API_BASE", "/newsapi")                 # Nginx will proxy this to the local API
 
-DATA_DIR = Path("/opt/newsbot/data")
-OUT_DIR = Path("/opt/newsbot/out")
+DATA_DIR = Path(os.getenv("DATA_DIR", "/opt/newsbot/data"))
+OUT_DIR = Path(os.getenv("OUT_DIR", "/opt/newsbot/out"))
 SUBSCRIBERS_FILE = DATA_DIR / "subscribers.json"
 
 MAX_ARTICLES = 10                                # limit per day
@@ -219,7 +219,7 @@ def wrap_html(content_fragment, start_date, end_date):
 
   <h1>HCLS — Weekly Summary</h1>
   <div>Period: {html.escape(period)}</div>
-  <div style="height:1px;background:#222;margin:1rem 0;"></div>
+  <hr style="height:1px;background:#222;border:0;margin:1rem 0;">
 
   {content_fragment}
 </div>
@@ -543,8 +543,8 @@ def make_email_safe_fragment(html_doc: str) -> str:
         # If parsing fails, return original
         return html_doc
 
-    # 1) Pick main content
-    root = soup.select_one("div.container") or soup.body or soup
+    # 1) Pick main content - use body or soup to catch everything
+    root = soup.body or soup
 
     # 2) Remove scripts, styles, and the top control bar
     for el in root.select("script, style, .bar, form"):
@@ -578,6 +578,9 @@ def make_email_safe_fragment(html_doc: str) -> str:
 
     for ul in root.find_all("ul"):
         ul["style"] = "padding-left:20px;margin:6px 0 12px 0;"
+
+    for hr in root.find_all("hr"):
+        hr["style"] = "border:0;border-top:1px solid #e5e7eb;margin:20px 0;"
 
     # Return only the cleaned inner HTML
     return "".join(str(c) for c in root.children) or str(root)
@@ -619,11 +622,6 @@ def send_email_html(to_list, subject, html_body):
           <table role="presentation" width="90%" cellspacing="0" cellpadding="0" border="0"
                  style="max-width:900px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:10px;
                         font-family:Arial,Helvetica,sans-serif;color:#333333;">
-            <tr>
-              <td style="padding:30px 40px 15px 40px;text-align:center;">
-                <h1 style="margin:0;font-size:26px;color:#1f2937;">Healthcare & Life Sciences Weekly Summary</h1>
-              </td>
-            </tr>
             <tr>
               <td style="padding:20px 40px 40px 40px;font-size:15px;line-height:1.7;color:#111827;">
                 {safe_body}
@@ -707,7 +705,9 @@ def send_weekly_email_if_monday(weekly_path: Path, period: str):
         personalized = add_unsubscribe_footer(html_body, addr)
         send_email_html([addr], f"HCLS — Weekly Summary ({period})", personalized)
 
-def test_send_email(target_email: str | None = None):
+from typing import Optional
+
+def test_send_email(target_email: Optional[str] = None):
     """
     Send the latest weekly digest immediately.
     - Default recipient: lfernand@akamai.com
