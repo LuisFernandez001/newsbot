@@ -5,7 +5,7 @@ Integrates with /newsapi/list-subscribers and adds controls for cron + job execu
 """
 
 from flask import Flask, request, Response, render_template_string, jsonify
-import os, requests, subprocess, json
+import os, requests, subprocess, json, urllib.parse
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -105,13 +105,18 @@ def add_subscriber_via_api(email: str) -> tuple[bool, str]:
     Returns (ok, message_text).
     """
     try:
-        url = f"{NEWSAPI_LIST_URL}&add={email}"
+        # Use urllib.parse to encode email
+        encoded_email = urllib.parse.quote(email)
+        url = f"{NEWSAPI_LIST_URL}&add={encoded_email}"
+        print(f"DEBUG: Calling API {url}")  # Log to stdout for journalctl
         r = requests.get(url, timeout=10)
         text = r.text.strip()
         if r.ok and ("Added" in text or "added" in text or "✅" in text):
             return True, text or f"Added {email}"
-        return False, text or f"API returned {r.status_code}"
+        print(f"DEBUG: API failed. Status: {r.status_code}, Body: {text}")
+        return False, f"API Error ({r.status_code}): {text}"
     except Exception as e:
+        print(f"DEBUG: Exception calling API: {e}")
         return False, f"Exception: {e}"
 
 
@@ -121,13 +126,17 @@ def remove_subscriber_via_api(email: str) -> tuple[bool, str]:
     Returns (ok, message_text).
     """
     try:
-        url = f"{NEWSAPI_LIST_URL}&remove={email}"
+        encoded_email = urllib.parse.quote(email)
+        url = f"{NEWSAPI_LIST_URL}&remove={encoded_email}"
+        print(f"DEBUG: Calling API {url}")
         r = requests.get(url, timeout=10)
         text = r.text.strip()
         if r.ok and ("Removed" in text or "removed" in text or "🗑️" in text):
             return True, text or f"Removed {email}"
-        return False, text or f"API returned {r.status_code}"
+        print(f"DEBUG: API failed. Status: {r.status_code}, Body: {text}")
+        return False, f"API Error ({r.status_code}): {text}"
     except Exception as e:
+        print(f"DEBUG: Exception calling API: {e}")
         return False, f"Exception: {e}"
 
 
