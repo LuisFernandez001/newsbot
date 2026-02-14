@@ -29,7 +29,11 @@ if dotenv_path.exists():
         if not line.strip() or line.strip().startswith("#"): 
             continue
         k, _, v = line.partition("=")
-        os.environ.setdefault(k.strip(), v.strip())
+        val = v.strip()
+        # Strip matching quotes if present
+        if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+            val = val[1:-1]
+        os.environ.setdefault(k.strip(), val)
 
 # ---------------- CONFIG ----------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
