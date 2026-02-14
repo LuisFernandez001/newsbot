@@ -7,7 +7,7 @@ USAGE:
   python rss_daily_summary.py weekly    # generate weekly HTML + email subscribers
 """
 
-import os, re, sys, json, datetime as dt, html, smtplib
+import os, re, sys, json, datetime as dt, html, smtplib, shutil
 from datetime import datetime
 from pathlib import Path
 from email.mime.multipart import MIMEMultipart
@@ -152,6 +152,19 @@ def load_db():
 def save_db(data):
     save_json(DATA_FILE, data)
 
+def load_customers():
+    """Load customer names from customers.txt in DATA_DIR."""
+    cust_file = DATA_DIR / "customers.txt"
+    if not cust_file.exists():
+        return []
+    try:
+        text = cust_file.read_text(encoding="utf-8")
+        # Filter out comments and empty lines
+        return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    except Exception as e:
+        print(f"Error loading customers.txt: {e}")
+        return []
+
 def daily_collect():
     """Collect up to MAX_ARTICLES new healthcare-tech items for today."""
     db = load_db()
@@ -273,10 +286,23 @@ def weekly_digest():
     )
 
     # Group by category sections (model infers categories)
+    # Load customers for priority section
+    customers = load_customers()
+    customer_prompt = ""
+    if customers:
+        cust_list_str = ", ".join(customers)
+        customer_prompt = (
+            f"First, check if any of the articles relate to these specific customers: {cust_list_str}. "
+            "If yes, create a section <h2>Our Customers</h2> and list their news first. "
+            "Then create a section <h2>Other news in the industry</h2> for the rest. "
+        )
+
     prompt = (
         "Create a weekly digest for the Healthcare & Life Sciences technology industry. "
         "Begin with <h2>What matters</h2> and 3–5 paragraphs with strategic takeaways for HCLS leaders. "
-        "Then group the following articles by thematic category (e.g., AI in Healthcare, Telemedicine, "
+        f"{customer_prompt}"
+        "Then, for **ALL REMAINING** articles (excluding those already listed in 'Our Customers' if any), "
+        "group them by thematic category (e.g., AI in Healthcare, Telemedicine, "
         "Pharma & Research, Digital Health, Policy & Regulation). For each category, output an <h2>Category</h2> "
         "and a <ul> with <li><strong>Title</strong> — one-sentence summary with <a href>source link</a></li>. "
         "No 'Sources' list. Only HTML.\n\n"

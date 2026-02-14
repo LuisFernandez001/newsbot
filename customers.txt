@@ -1,0 +1,52 @@
+# Add one customer name per line
+# Example:
+AdventHealth System
+American Lebanese Syrian Associated Charities, Inc.
+Becton, Dickinson and Company
+eHealthinsurance services, Inc.
+Eli Lilly - AT&T
+Henry Schein Inc
+IQVIA Holdings Inc.
+Mercy Health
+Mount Sinai Medical Center
+R1 RCM Inc.
+Cardinal Health Inc
+Cigna Corporate Services LLC
+Humana Inc.
+Kaiser Foundation Health Plan, Inc.
+Mayo Clinic
+Merck & Co. Inc.
+Molina Healthcare, Inc.
+The Permanente Medical Group
+Anthem Inc.
+Blue Cross Blue Shield of Michigan, Inc
+Blue Cross Blue Shield of Tennessee, Inc.
+BlueCross BlueShield Association
+BlueCross BlueShield of Rhode Island
+California Physicians Service dba Blue Shield of California
+Government Employees Health Association, Inc.
+Health Care Service Corporation
+Health-ISAC Inc.
+Novus Biologicals LLC
+Premier Healthcare Solutions, Inc.
+BIOGEN INC.
+Castlight Health, Inc.
+Diamond Pharmacy
+Memorial Sloan Kettering Cancer Center
+Montefiore Medical Center
+Rite Aid Hdqtrs. Corp.
+Spectra Laboratories, Inc.
+Zimmer Holdings Inc
+Zoetis Services LLC
+athenahealth, Inc.
+CVS Pharmacy, Inc.
+GE Healthcare
+HCA-Healthcare
+Hospital for Special Surgery
+Johnson & Johnson Services, Inc
+AmerisourceBergen Corporation
+CENTENE CORPORATION
+CSL Behring
+Medtronic Inc
+Thermo Fisher Scientific Inc.
+United HealthCare Services, Inc.
