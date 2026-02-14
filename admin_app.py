@@ -25,7 +25,8 @@ ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "changeme")
 
 # Use Nginx proxy for newsapi so we don't depend on internal ports here
-NEWSAPI_LIST_URL = "http://127.0.0.1/newsapi/list-subscribers?token=subslist"
+# Default to prod URL, override in .env for local
+NEWSAPI_LIST_URL = os.getenv("NEWSAPI_LIST_URL", "http://127.0.0.1/newsapi/list-subscribers?token=subslist")
 
 NEWSBOT_PATH = "/opt/newsbot"
 VENV_PY = "/opt/newsbot/venv/bin/python"  # use venv runner for jobs
