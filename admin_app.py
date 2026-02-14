@@ -78,11 +78,24 @@ def load_subscribers():
         return []
 
 def load_customers():
-    """Load customer names from customers.txt."""
+    """
+    Load customer names from customers.txt.
+    Checks DATA_DIR first, then falls back to NEWSBOT_PATH/customers.txt.
+    """
     try:
-        if not CUSTOMERS_FILE.exists():
-            return []
-        text = CUSTOMERS_FILE.read_text(encoding="utf-8")
+        # 1. Try DATA_DIR (user edits)
+        if CUSTOMERS_FILE.exists():
+            text = CUSTOMERS_FILE.read_text(encoding="utf-8")
+        else:
+            # 2. Try Repo Root (seed file)
+            repo_file = Path(NEWSBOT_PATH) / "customers.txt"
+            if repo_file.exists():
+                text = repo_file.read_text(encoding="utf-8")
+                # Optional: auto-migrate to DATA_DIR immediately? 
+                # For now, just read.
+            else:
+                return []
+        
         # Filter out comments and empty lines
         return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
     except Exception as e:
