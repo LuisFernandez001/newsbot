@@ -158,12 +158,22 @@ def save_db(data):
     save_json(DATA_FILE, data)
 
 def load_customers():
-    """Load customer names from customers.txt in DATA_DIR."""
-    cust_file = DATA_DIR / "customers.txt"
-    if not cust_file.exists():
-        return []
+    """
+    Load customer names from customers.txt.
+    Checks DATA_DIR first, then falls back to local customers.txt (repo root).
+    """
     try:
-        text = cust_file.read_text(encoding="utf-8")
+        cust_file = DATA_DIR / "customers.txt"
+        if cust_file.exists():
+            text = cust_file.read_text(encoding="utf-8")
+        else:
+            # Fallback to repo root
+            local_file = Path("customers.txt")
+            if local_file.exists():
+                text = local_file.read_text(encoding="utf-8")
+            else:
+                return []
+
         # Filter out comments and empty lines
         return [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
     except Exception as e:
