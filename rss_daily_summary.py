@@ -55,6 +55,7 @@ CR_TZ = dt.timezone(dt.timedelta(hours=-6))      # Costa Rica
 OPENAI_BASE = "https://api.openai.com/v1"
 
 DATA_FILE = DATA_DIR / "news_log.json"
+EMAIL_LOG_FILE = DATA_DIR / "weekly_email_log.json"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -635,13 +636,19 @@ def send_email_html(to_list, subject, html_body):
     Send styled HTML digest emails that render cleanly in Gmail, Outlook, etc.
     Each recipient receives a personalized unsubscribe link.
     Uses a white, minimal design for consistent readability.
+
+    Returns:
+      tuple[list[str], list[str]]: (sent_addresses, failed_addresses)
     """
+    sent = []
+    failed = []
+
     if not SMTP_USER or not SMTP_PASS or not EMAIL_FROM:
         print("SMTP creds not set; skipping email.")
-        return
+        return sent, list(to_list or [])
     if not to_list:
         print("No recipients; skipping email.")
-        return
+        return sent, failed
 
     for addr in to_list:
         # Generate personalized unsubscribe link
@@ -687,7 +694,6 @@ def send_email_html(to_list, subject, html_body):
 </html>
 """
 
-
         msg = MIMEMultipart("alternative")
         msg["From"] = EMAIL_FROM
         msg["To"] = addr
@@ -701,37 +707,15 @@ def send_email_html(to_list, subject, html_body):
                 s.starttls()
                 s.login(SMTP_USER, SMTP_PASS)
                 s.sendmail(EMAIL_FROM, [addr], msg.as_string())
+            sent.append(addr)
             print(f"✅ Sent email to {addr}")
         except Exception as e:
+            failed.append(addr)
             print(f"❌ SMTP send failed for {addr}: {e}")
 
-from urllib.parse import urlencode
+    return sent, failed
 
-def add_unsubscribe_footer(html_body: str, email_addr: str) -> str:
-    """
-    Append a consistent unsubscribe footer to each HTML email.
-    Includes a personalized unsubscribe link for the given address.
-    """
-    token = make_token(email_addr) if 'make_token' in globals() else ""
-    query = urlencode({"email": email_addr, "token": token})
-    unsubscribe_url = f"http://newsweeklydigest.duckdns.org/unsubscribe?{query}"
 
-    footer_html = f"""
-    <hr style="border:none;border-top:1px solid #ddd;margin:30px 0;">
-    <div style="font-size:13px;color:#555;text-align:center;line-height:1.4;">
-      You’re receiving this because you subscribed to the
-      <b>HCLS Weekly Digest</b>.<br>
-      <a href="{unsubscribe_url}"
-         style="color:#2563eb;text-decoration:none;">Unsubscribe</a> anytime.
-    </div>
-    </body></html>
-    """
-    # ensure footer added only once
-    if "</body>" in html_body:
-        html_body = html_body.replace("</body>", footer_html)
-    else:
-        html_body += footer_html
-    return html_body
 def send_weekly_email_if_monday(weekly_path: Path, period: str):
     now = dt.datetime.now(CR_TZ)
     # if now.weekday() != 0 or now.hour < 7:  # Monday=0; ensure after 07:00
@@ -739,16 +723,44 @@ def send_weekly_email_if_monday(weekly_path: Path, period: str):
     #     print("Not Monday 07:00 CR; skipping email send.")
     #     return
 
+    digest_id = weekly_path.name
+    email_log = load_json(EMAIL_LOG_FILE, {})
+    digest_history = email_log.get("digests", {}).get(digest_id, {})
+    already_sent = set(digest_history.get("sent_to", []))
+
     subs = ensure_subscribers()  # seed your email if empty
     if not subs:
         print("No subscribers.")
         return
 
+    # Backward compatibility: older log format only stored last_digest_sent.
+    # If that legacy marker matches this digest and no per-recipient history exists,
+    # assume the digest was already sent and skip to avoid duplicate emails.
+    if not digest_history and email_log.get("last_digest_sent") == digest_id:
+        print(f"Weekly email already sent for {digest_id} (legacy log); skipping duplicate send.")
+        return
+
+    pending_subs = [addr for addr in subs if addr not in already_sent]
+    if not pending_subs:
+        print(f"Weekly email already sent to all subscribers for {digest_id}; skipping duplicate send.")
+        return
+
     html_body = weekly_path.read_text(encoding="utf-8")
-    # personalize unsubscribe footer per recipient (simple loop)
-    for addr in subs:
-        personalized = add_unsubscribe_footer(html_body, addr)
-        send_email_html([addr], f"HCLS — Weekly Summary ({period})", personalized)
+    sent, failed = send_email_html(pending_subs, f"HCLS — Weekly Summary ({period})", html_body)
+
+    updated_sent = sorted(already_sent.union(sent))
+    email_log.setdefault("digests", {})[digest_id] = {
+        "sent_to": updated_sent,
+        "last_sent_at": now.isoformat(),
+        "last_attempt_failed": failed,
+    }
+    email_log["last_digest_sent"] = digest_id
+    save_json(EMAIL_LOG_FILE, email_log)
+
+    if failed:
+        print(f"Recorded partial send for {digest_id}. Failed recipients: {', '.join(failed)}")
+    else:
+        print(f"Recorded weekly email send for {digest_id}.")
 
 from typing import Optional
 
